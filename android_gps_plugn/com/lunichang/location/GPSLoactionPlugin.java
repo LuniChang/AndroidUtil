@@ -1,17 +1,21 @@
 package com.lunichang.util.location;
 
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.location.Criteria;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Message;
 import android.util.Log;
 
+import java.util.ArrayList;
 import java.util.Iterator;
 
 import android.location.GpsSatellite;
@@ -26,28 +30,30 @@ public class GPSLoactionPlugin {
     private static GPSLoactionPlugin instance;//建议单例调用
 
 
-    public static GPSLoactionPlugin getInstance(Context context, LocationCallBack locationCallBack) {
+    public static GPSLoactionPlugin getInstance(Context context) {
         if (instance == null) {
-            instance = new GPSLoactionPlugin(context, locationCallBack);
+            instance = new GPSLoactionPlugin(context);
         }
         return instance;
     }
 
-
-    public GPSLoactionPlugin(Context context, LocationCallBack locationCallBack) {
+    public GPSLoactionPlugin(Context context) {
         this.context = context;
-        this.locationCallBack = locationCallBack;
     }
+//    public GPSLoactionPlugin(Context context, LocationCallBack locationCallBack) {
+//        this.context = context;
+//        this.locationCallBack = locationCallBack;
+//    }
+//
+//    public LocationCallBack getLocationCallBack() {
+//        return locationCallBack;
+//    }
+//
+//    public void setLocationCallBack(LocationCallBack locationCallBack) {
+//        this.locationCallBack = locationCallBack;
+//    }
 
-    public LocationCallBack getLocationCallBack() {
-        return locationCallBack;
-    }
-
-    public void setLocationCallBack(LocationCallBack locationCallBack) {
-        this.locationCallBack = locationCallBack;
-    }
-
-    private float minDistance = 1;
+    private float minDistance = 0.5f;
     private static final String TAG = "GPSLoactionPlugin";
     private LocationManager locationManager = null;
     private Criteria locationOption = null;
@@ -60,7 +66,7 @@ public class GPSLoactionPlugin {
 
     private Context context;
     private boolean isOnceLocation = true;
-    private long interval = 2000L;
+    private long interval = 1000L;
     private long timeOutSet = 10000L;
     private boolean hadGetGps = false;
     private long curentGetGpsTime = 0;
@@ -70,9 +76,21 @@ public class GPSLoactionPlugin {
     private int gpsEnableSign = 29;
     private int gpsSign = -1;
 
+    private boolean isWork=false;
 
-    private LocationCallBack locationCallBack;
+//    private LocationCallBack locationCallBack;
 
+    private ArrayList<LocationCallBack> locationCallBacks = new ArrayList<>();
+
+
+    public void removeLocationCallBack(LocationCallBack locationCallBack) {
+        this.locationCallBacks.remove(locationCallBack);
+    }
+
+    public void addLocationCallBack(LocationCallBack locationCallBack) {
+        if (this.locationCallBacks.indexOf(locationCallBack) == -1)
+            this.locationCallBacks.add(locationCallBack);
+    }
 
     protected class WatchTimeOutRunnable implements Runnable {
         @Override
@@ -106,18 +124,19 @@ public class GPSLoactionPlugin {
 
     /**
      * 事实定位
-     * @param interval  间隔时间  毫秒
-     * @param minDistance  变化间隔 单位米
-     * @param timeOutSet 超时时间 毫秒
+     *
+     * @param interval    间隔时间  毫秒
+     * @param minDistance 变化间隔 单位米
+     * @param timeOutSet  超时时间 毫秒
      */
-    public void getLocationAllTime(int interval, float minDistance, int timeOutSet) {
+    public void getLocationAllTime(long interval, float minDistance, long timeOutSet) {
         if (checkPermission()) {
             return;
         }
         this.interval = interval;
         this.timeOutSet = timeOutSet;
         this.minDistance = minDistance;
-
+        this.isWork=true;
         getLocationAllTime();
     }
 
@@ -130,12 +149,14 @@ public class GPSLoactionPlugin {
             return;
         }
         isOnceLocation = false;
+        this.isWork=true;
         startLocation();
         startWatchTimeOut();
     }
 
     /**
      * 单次定位
+     *
      * @param timeOutSet
      */
     public void getLocation(int timeOutSet) {
@@ -145,6 +166,7 @@ public class GPSLoactionPlugin {
         this.timeOutSet = timeOutSet;
         stopLocation();
         isOnceLocation = true;
+        this.isWork=true;
         startLocation();
         startWatchTimeOut();
     }
@@ -160,17 +182,18 @@ public class GPSLoactionPlugin {
             return;
         }
         try {
+            this.isWork=true;
             if (locationManager == null)
                 locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
 
 
             locationManager.addGpsStatusListener(watchGpsStatusistener);
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, interval, 1,
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, interval, minDistance,
                     watchErrCallbackLocationListener);
 
         } catch (Exception e) {
             Log.e(TAG, e.getMessage());
-
+            this.isWork=false;
         }
 
     }
@@ -190,6 +213,7 @@ public class GPSLoactionPlugin {
             return;
         }
         try {
+            this.isWork=true;
             if (locationManager == null)
                 locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
 
@@ -197,19 +221,19 @@ public class GPSLoactionPlugin {
             locationManager.addGpsStatusListener(gpsStatusistener);
 
 
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, interval, 1,
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, interval, minDistance,
                     onceErrCallbackLocationListener);
 
         } catch (Exception e) {
             Log.e(TAG, e.getMessage());
-
+            this.isWork=false;
         }
     }
 
 
     private Intent serviceIntent = null;
 
-    public void startWatchTimeOut() {
+    private void startWatchTimeOut() {
         if (this.isWatchTimeOut == true) {
             return;
         }
@@ -240,6 +264,7 @@ public class GPSLoactionPlugin {
             context.stopService(serviceIntent);
 
         }
+        this.isWork=false;
 
     }
 
@@ -248,7 +273,12 @@ public class GPSLoactionPlugin {
         LocationData data = new LocationData();
         data.is_timeout = 1;
         data.type = "timeout";
-        locationCallBack.onGetLocationTimeOut(data);
+
+        for (int i = 0; i < locationCallBacks.size(); ++i) {
+            locationCallBacks.get(i).onGetLocationTimeOut(data);
+        }
+//        locationCallBack.onGetLocationTimeOut(data);
+
         if (isOnceLocation) {
             stopLocation();
         }
@@ -280,7 +310,10 @@ public class GPSLoactionPlugin {
             data.longitude = longitude;
 
 
-            locationCallBack.onGetLocationSuccess(data);
+//            locationCallBack.onGetLocationSuccess(data);
+            for (int i = 0; i < locationCallBacks.size(); ++i) {
+                locationCallBacks.get(i).onGetLocationSuccess(data);
+            }
 
             if (isOnceLocation) {
                 stopLocation();
@@ -310,12 +343,15 @@ public class GPSLoactionPlugin {
         public void onProviderDisabled(String provider) {
 
 
-            locationCallBack.onGetLocationError(new LocationData(provider));
+//            locationCallBack.onGetLocationError(new LocationData(provider));
+            for (int i = 0; i < locationCallBacks.size(); ++i) {
+                locationCallBacks.get(i).onGetLocationError(new LocationData(provider));
+            }
         }
 
     }
 
-    public void startLocation() {
+    private void startLocation() {
         if (checkPermission()) {
             return;
         }
@@ -345,7 +381,6 @@ public class GPSLoactionPlugin {
             serviceIntent.setClass(context, LocationForegoundService.class);
         }
         context.startService(serviceIntent);
-
     }
 
     public class WatchGpsStatusistener implements GpsStatus.Listener {
@@ -389,12 +424,17 @@ public class GPSLoactionPlugin {
                 data.foundSatellites = maxCount;
                 data.enableSatellites = gpsSign;
 
-                locationCallBack.onGetLocationSuccess(data);
-
+//                locationCallBack.onGetLocationSuccess(data);
+                for (int i = 0; i < locationCallBacks.size(); ++i) {
+                    locationCallBacks.get(i).onGetLocationSuccess(data);
+                }
 
             } catch (Exception e) {
                 Log.e(TAG, e.getMessage());
-                locationCallBack.onGetLocationError(new LocationData(e.getMessage()));
+//                locationCallBack.onGetLocationError(new LocationData(e.getMessage()));
+                for (int i = 0; i < locationCallBacks.size(); ++i) {
+                    locationCallBacks.get(i).onGetLocationError(new LocationData(e.getMessage()));
+                }
 
             }
 
@@ -404,7 +444,10 @@ public class GPSLoactionPlugin {
     private boolean checkPermission() {
         boolean state = ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED;
         if (state) {
-            locationCallBack.hadNoLocationPermission();
+//            locationCallBack.hadNoLocationPermission();
+            for (int i = 0; i < locationCallBacks.size(); ++i) {
+                locationCallBacks.get(i).hadNoLocationPermission();
+            }
         }
 
         return state;
@@ -457,12 +500,17 @@ public class GPSLoactionPlugin {
                 locationManager.removeGpsStatusListener(this);
                 locationManager.removeUpdates(onceErrCallbackLocationListener);
 
-                locationCallBack.onGetLocationSuccess(data);
+//                locationCallBack.onGetLocationSuccess(data);
+                for (int i = 0; i < locationCallBacks.size(); ++i) {
+                    locationCallBacks.get(i).onGetLocationSuccess(data);
+                }
             } catch (Exception e) {
 
                 Log.e(TAG, e.getMessage());
-                locationCallBack.onGetLocationError(new LocationData(e.getMessage()));
-
+//                locationCallBack.onGetLocationError(new LocationData(e.getMessage()));
+                for (int i = 0; i < locationCallBacks.size(); ++i) {
+                    locationCallBacks.get(i).onGetLocationError(new LocationData(e.getMessage()));
+                }
             }
 
         }
@@ -487,7 +535,10 @@ public class GPSLoactionPlugin {
 
         @Override
         public void onProviderDisabled(String provider) {
-            locationCallBack.onGetLocationError(new LocationData(provider));
+//            locationCallBack.onGetLocationError(new LocationData(provider));
+            for (int i = 0; i < locationCallBacks.size(); ++i) {
+                locationCallBacks.get(i).onGetLocationError(new LocationData(provider));
+            }
         }
 
     }
@@ -506,6 +557,7 @@ public class GPSLoactionPlugin {
 
     }
 
-
-
+    public boolean isWork() {
+        return isWork;
+    }
 }
